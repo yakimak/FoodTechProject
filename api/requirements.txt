@@ -1,0 +1,8 @@
+fastapi
+uvicorn
+pymysql
+cryptography
+pyjwt
+requests
+pytest
+httpx

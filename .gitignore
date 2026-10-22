@@ -1,0 +1,12 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.venv/
+venv/
+.env
+*.db
+*.sqlite
+
+# исходный скриншот с действующим JWT — не публикуем
+screenshots/loginandtoken.png

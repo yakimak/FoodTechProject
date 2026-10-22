@@ -1,0 +1,128 @@
+services:
+  mysql:
+    image: mysql:8.0
+    command: --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_ci
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-root}
+      MYSQL_DATABASE: ${DB_NAME:-surplus_guard}
+      MYSQL_USER: ${DB_USER:-app}
+      MYSQL_PASSWORD: ${DB_PASS:-app}
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -u root -p\"$${MYSQL_ROOT_PASSWORD}\" --silent"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+    restart: unless-stopped
+
+  init:
+    image: python:3.11-slim
+    working_dir: /app
+    volumes:
+      - .:/app
+    depends_on:
+      mysql:
+        condition: service_healthy
+    environment:
+      DB_HOST: mysql
+      DB_PORT: "3306"
+      DB_NAME: ${DB_NAME:-surplus_guard}
+      DB_USER: ${DB_USER:-app}
+      DB_PASS: ${DB_PASS:-app}
+      DATABASE_URL: mysql+pymysql://${DB_USER:-app}:${DB_PASS:-app}@mysql:3306/${DB_NAME:-surplus_guard}
+      MODEL_PATH: /app/models/forecast.pkl
+      DATA_PATH: /app/data/train.csv
+      PYTHONUNBUFFERED: "1"
+    command: >
+      sh -c "apt-get update &&
+             apt-get install -y --no-install-recommends build-essential &&
+             rm -rf /var/lib/apt/lists/* &&
+             pip install --no-cache-dir -r ml-service/requirements.txt &&
+             (pip install --no-cache-dir -r ml-service/requirements-prophet.txt ||
+              echo 'Prophet is unavailable; the fallback forecaster will be used') &&
+             python etl/load.py &&
+             cd ml-service &&
+             python -m app.train"
+    restart: "no"
+
+  api:
+    build:
+      context: ./api
+      dockerfile: Dockerfile
+    depends_on:
+      mysql:
+        condition: service_healthy
+      ml-service:
+        condition: service_started
+    ports:
+      - "8000:8000"
+    environment:
+      DB_HOST: mysql
+      DB_PORT: "3306"
+      DB_NAME: ${DB_NAME:-surplus_guard}
+      DB_USER: ${DB_USER:-app}
+      DB_PASS: ${DB_PASS:-app}
+      JWT_SECRET: ${JWT_SECRET:-dev-secret-change-me-0123456789abcdef}
+      ML_SERVICE_URL: http://ml-service:8001
+      ML_TIMEOUT: "60"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 15s
+    restart: unless-stopped
+
+  ml-service:
+    build:
+      context: ./ml-service
+      dockerfile: Dockerfile
+    depends_on:
+      mysql:
+        condition: service_healthy
+    ports:
+      - "8001:8001"
+    environment:
+      DB_HOST: mysql
+      DB_PORT: "3306"
+      DB_NAME: ${DB_NAME:-surplus_guard}
+      DB_USER: ${DB_USER:-app}
+      DB_PASS: ${DB_PASS:-app}
+      DATABASE_URL: mysql+pymysql://${DB_USER:-app}:${DB_PASS:-app}@mysql:3306/${DB_NAME:-surplus_guard}
+      MODEL_PATH: /app/models/forecast.pkl
+      PYTHONUNBUFFERED: "1"
+    volumes:
+      - ./models:/app/models
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8001/health', timeout=5)"]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+      start_period: 20s
+    restart: unless-stopped
+
+  dashboard:
+    build:
+      context: ./dashboard
+      dockerfile: Dockerfile
+    depends_on:
+      api:
+        condition: service_healthy
+    ports:
+      - "8501:8501"
+    environment:
+      API_BASE_URL: http://api:8000
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8501/_stcore/health', timeout=3)"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    restart: unless-stopped
+
+volumes:
+  mysql_data:
